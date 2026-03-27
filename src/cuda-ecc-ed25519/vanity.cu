@@ -69,12 +69,13 @@ void vanity_setup(config &vanity) {
 		cudaDeviceProp device;
 		cudaGetDeviceProperties(&device, i);
 
-		int blockSize = 0, minGridSize = 0, maxActiveBlocks = 0;
+		int blockSize = 0, minGridSize = 0, maxActiveBlocksPerSM = 0;
 		cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, vanity_scan, 0, 0);
-		cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxActiveBlocks, vanity_scan, blockSize, 0);
+		cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxActiveBlocksPerSM, &vanity_scan, blockSize, 0);
+		int totalBlocks = maxActiveBlocksPerSM * device.multiProcessorCount;
 
-		printf("GPU: %d (%s) -- Threads: %d x %d = %d\n",
-			i, device.name, maxActiveBlocks, blockSize, maxActiveBlocks * blockSize);
+		printf("GPU: %d (%s) -- %d SMs x %d blocks x %d threads = %d total threads\n",
+			i, device.name, device.multiProcessorCount, maxActiveBlocksPerSM, blockSize, totalBlocks * blockSize);
 
 		// Generate 32 bytes of CSPRNG seed on host
 		unsigned char host_seed[32];
@@ -114,9 +115,12 @@ void vanity_run(config &vanity) {
 		for (int g = 0; g < gpuCount; ++g) {
 			cudaSetDevice(g);
 
-			int blockSize = 0, minGridSize = 0, maxActiveBlocks = 0;
+			cudaDeviceProp device;
+			cudaGetDeviceProperties(&device, g);
+			int blockSize = 0, minGridSize = 0, maxActiveBlocksPerSM = 0;
 			cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, vanity_scan, 0, 0);
-			cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxActiveBlocks, vanity_scan, blockSize, 0);
+			cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxActiveBlocksPerSM, vanity_scan, blockSize, 0);
+			int totalBlocks = maxActiveBlocksPerSM * device.multiProcessorCount;
 
 			int* dev_g;
 			cudaMalloc((void**)&dev_g, sizeof(int));
@@ -125,8 +129,7 @@ void vanity_run(config &vanity) {
 			cudaMalloc((void**)&dev_keys_found[g], sizeof(int));
 			cudaMalloc((void**)&dev_executions_this_gpu[g], sizeof(int));
 
-			// Pass iteration number so each kernel invocation explores new space
-			vanity_scan<<<maxActiveBlocks, blockSize>>>(
+			vanity_scan<<<totalBlocks, blockSize>>>(
 				vanity.dev_seeds[g],
 				(unsigned long long int)i,
 				dev_keys_found[g],
