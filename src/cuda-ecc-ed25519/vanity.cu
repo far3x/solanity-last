@@ -69,13 +69,13 @@ void vanity_setup(config &vanity) {
 		cudaDeviceProp device;
 		cudaGetDeviceProperties(&device, i);
 
-		int blockSize = 0, minGridSize = 0, maxActiveBlocksPerSM = 0;
-		cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, vanity_scan, 0, 0);
-		cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxActiveBlocksPerSM, &vanity_scan, blockSize, 0);
-		int totalBlocks = maxActiveBlocksPerSM * device.multiProcessorCount;
+		// Hardcode for maximum occupancy — occupancy API fails on Blackwell JIT
+		int blockSize = 256;
+		int blocksPerSM = 4;
+		int totalBlocks = blocksPerSM * device.multiProcessorCount;
 
 		printf("GPU: %d (%s) -- %d SMs x %d blocks x %d threads = %d total threads\n",
-			i, device.name, device.multiProcessorCount, maxActiveBlocksPerSM, blockSize, totalBlocks * blockSize);
+			i, device.name, device.multiProcessorCount, blocksPerSM, blockSize, totalBlocks * blockSize);
 
 		// Generate 32 bytes of CSPRNG seed on host
 		unsigned char host_seed[32];
@@ -117,10 +117,8 @@ void vanity_run(config &vanity) {
 
 			cudaDeviceProp device;
 			cudaGetDeviceProperties(&device, g);
-			int blockSize = 0, minGridSize = 0, maxActiveBlocksPerSM = 0;
-			cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, vanity_scan, 0, 0);
-			cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxActiveBlocksPerSM, vanity_scan, blockSize, 0);
-			int totalBlocks = maxActiveBlocksPerSM * device.multiProcessorCount;
+			int blockSize = 256;
+			int totalBlocks = 4 * device.multiProcessorCount;
 
 			int* dev_g;
 			cudaMalloc((void**)&dev_g, sizeof(int));
