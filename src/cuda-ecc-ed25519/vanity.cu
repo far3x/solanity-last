@@ -137,6 +137,12 @@ void vanity_run(config &vanity) {
 		}
 
 		cudaDeviceSynchronize();
+		cudaError_t err = cudaGetLastError();
+		if (err != cudaSuccess) {
+			printf("CUDA ERROR: %s\n", cudaGetErrorString(err));
+			fflush(stdout);
+			exit(1);
+		}
 		auto finish = std::chrono::high_resolution_clock::now();
 
 		for (int g = 0; g < gpuCount; ++g) {
@@ -155,6 +161,7 @@ void vanity_run(config &vanity) {
 			executions_this_iteration / elapsed.count(),
 			executions_total, keys_found_total
 		);
+		fflush(stdout);
 
 		if (keys_found_total >= STOP_AFTER_KEYS_FOUND) {
 			printf("Done!\n");
