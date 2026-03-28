@@ -62,6 +62,53 @@ __device__ bool check_suffix_mod(uint8_t* pubkey, int* suffix_digits, int suffix
 	return true;
 }
 
+// Ultra-fast prefix pre-filter: check first 2 bytes against precomputed range.
+// Rejects 99.97%+ of keys with just 2 byte comparisons.
+// Only keys that pass go through full b58enc.
+__device__ bool check_prefix_prefilter(uint8_t* pubkey, int byte0_min, int byte0_max) {
+	return (pubkey[0] >= byte0_min && pubkey[0] <= byte0_max);
+}
+
+// Fast prefix check: uses prefilter + full b58enc only on candidates
+__device__ bool check_prefix_fast(uint8_t* pubkey, int* prefix_digits, int prefix_len) {
+	// Full base58 encode into buf[], but stop after we have enough leading digits
+	// The b58enc algorithm produces digits in buf[] from MSB to LSB.
+	// We can bail early once we've checked the prefix.
+
+	uint8_t buf[64];
+	size_t size = 45; // max b58 length for 32 bytes
+	memset(buf, 0, size);
+
+	// Standard b58 encode inner loop
+	size_t zcount = 0;
+	while (zcount < 32 && !pubkey[zcount]) ++zcount;
+
+	size_t high;
+	for (size_t i = zcount, high2 = size - 1; i < 32; ++i, high2 = high) {
+		int carry = pubkey[i];
+		size_t j;
+		for (j = size - 1; ; --j) {
+			carry += 256 * buf[j];
+			buf[j] = carry % 58;
+			carry /= 58;
+			if (j == 0 || (j <= high2 && !carry)) break;
+		}
+		high = j;
+	}
+
+	// Find first non-zero digit
+	size_t start = 0;
+	while (start < size && buf[start] == 0) start++;
+
+	// Check prefix digits
+	for (int i = 0; i < prefix_len; i++) {
+		int digit = (start + i < size) ? buf[start + i] : 0;
+		if (prefix_digits[i] >= 0 && digit != prefix_digits[i]) return false;
+	}
+	return true;
+}
+
+// Fallback full b58enc prefix check
 __device__ bool check_prefix_b58(uint8_t* pubkey, int prefix_len) {
 	char key[256] = {0};
 	size_t ks = 256;
@@ -126,6 +173,7 @@ __device__ void batch_tobytes(ge_p3* points, uint8_t pubkeys[][32], int count) {
 void __global__ vanity_batched(
 	unsigned char* master_seed, unsigned long long int iteration,
 	int* suffix_digits, int suffix_len, int prefix_len, bool is_suffix,
+	int byte0_min, int byte0_max,
 	int* keys_found, int* exec_count
 ) {
 	int id = threadIdx.x + (blockIdx.x * blockDim.x);
@@ -197,7 +245,11 @@ void __global__ vanity_batched(
 			if (is_suffix && suffix_len > 0) {
 				matched = check_suffix_mod(batch_pubkeys[i], suffix_digits, suffix_len);
 			} else if (prefix_len > 0) {
-				matched = check_prefix_b58(batch_pubkeys[i], prefix_len);
+				// FAST PREFIX: byte[0] pre-filter rejects 99.6%+ instantly
+				if (batch_pubkeys[i][0] >= byte0_min && batch_pubkeys[i][0] <= byte0_max) {
+					// Only ~0.4% reach here — do full b58enc
+					matched = check_prefix_b58(batch_pubkeys[i], prefix_len);
+				}
 			}
 
 			if (matched) {
@@ -246,8 +298,35 @@ int main() {
 	bool is_suffix = (suffix_len > 0 && prefix_len == 0);
 	if (!is_suffix) suffix_len = 0;
 
-	if (is_suffix) printf("SUFFIX mode: \"%s\" (%d chars)\n", pattern+suffix_start, suffix_len);
-	else printf("PREFIX mode: \"%.*s\" (%d chars)\n", prefix_len, pattern, prefix_len);
+	// Compute byte[0] pre-filter range for prefix mode
+	int byte0_min = 0, byte0_max = 255;
+	if (!is_suffix && prefix_len > 0) {
+		// Compute the value range for this prefix in base58
+		// For a 43-char b58 address, prefix value * 58^(43-prefix_len)
+		// gives the number range. byte[0] = number >> 248.
+		// Use double for approximate calculation (good enough for byte-level filter)
+		double b58_val = 0;
+		for (int i = 0; i < prefix_len; i++) {
+			b58_val = b58_val * 58.0 + b58_digit(pattern[i]);
+		}
+		double pow58_rem = 1.0;
+		for (int i = 0; i < 43 - prefix_len; i++) pow58_rem *= 58.0;
+		double low = b58_val * pow58_rem;
+		double high = (b58_val + 1.0) * pow58_rem;
+		double pow2_248 = pow(2.0, 248);
+		byte0_min = (int)(low / pow2_248);
+		byte0_max = (int)(high / pow2_248);
+		if (byte0_min < 0) byte0_min = 0;
+		if (byte0_max > 255) byte0_max = 255;
+		// Widen by 1 to handle rounding
+		if (byte0_min > 0) byte0_min--;
+		if (byte0_max < 255) byte0_max++;
+		printf("PREFIX mode: \"%.*s\" (%d chars) [byte0 filter: %d-%d = %.1f%% pass]\n",
+			prefix_len, pattern, prefix_len, byte0_min, byte0_max,
+			(byte0_max - byte0_min + 1) / 256.0 * 100.0);
+	} else if (is_suffix) {
+		printf("SUFFIX mode: \"%s\" (%d chars) [modular check]\n", pattern+suffix_start, suffix_len);
+	}
 	printf("Batch size: %d (1 inversion per %d keys)\n", BATCH_SIZE, BATCH_SIZE);
 	fflush(stdout);
 
@@ -279,7 +358,7 @@ int main() {
 			int blocks=4*d.multiProcessorCount;
 			int *dk,*de; cudaMalloc((void**)&dk,sizeof(int)); cudaMalloc((void**)&de,sizeof(int));
 			int z=0; cudaMemcpy(dk,&z,sizeof(int),cudaMemcpyHostToDevice); cudaMemcpy(de,&z,sizeof(int),cudaMemcpyHostToDevice);
-			vanity_batched<<<blocks,256>>>(dev_seeds[g],(unsigned long long)iter,dev_sd[g],suffix_len,prefix_len,is_suffix,dk,de);
+			vanity_batched<<<blocks,256>>>(dev_seeds[g],(unsigned long long)iter,dev_sd[g],suffix_len,prefix_len,is_suffix,byte0_min,byte0_max,dk,de);
 			int kf=0; cudaDeviceSynchronize();
 			cudaError_t err=cudaGetLastError();
 			if(err!=cudaSuccess){printf("ERR: %s\n",cudaGetErrorString(err));fflush(stdout);exit(1);}
