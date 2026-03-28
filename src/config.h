@@ -4,7 +4,7 @@
 static int const MAX_ITERATIONS = 100000;
 static int const STOP_AFTER_KEYS_FOUND = 1;
 
-__device__ const int ATTEMPTS_PER_EXECUTION = 50000;
+__device__ const int ATTEMPTS_PER_EXECUTION = 2048;
 __device__ const int MAX_PATTERNS = 10;
 
 // Suffix matching: use ? for wildcards, suffix at the end
