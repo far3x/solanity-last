@@ -89,7 +89,11 @@ void vanity_setup(config &vanity) {
 	vanity.suffix_len = full_len - suffix_start;
 	const char* suffix_str = pattern + suffix_start;
 
-	printf("Suffix to match: \"%.*s\" (%d chars)\n", vanity.suffix_len, suffix_str, vanity.suffix_len);
+	if (vanity.suffix_len > 0) {
+		printf("Mode: SUFFIX — \"%.*s\" (%d chars) [fast modular check]\n", vanity.suffix_len, suffix_str, vanity.suffix_len);
+	} else {
+		printf("Mode: PREFIX — \"%s\" [b58enc check]\n", pattern);
+	}
 
 	// Convert suffix chars to base58 digit indices
 	int host_digits[16] = {0};
@@ -319,13 +323,34 @@ void __global__ vanity_scan(unsigned char* master_seed, unsigned long long int i
 		ge_scalarmult_base(&A, privatek);
 		ge_p3_tobytes(publick, &A);
 
-		// FAST: modular suffix check — O(32) mods instead of O(1408) divisions
-		if (check_suffix_mod(publick, suffix_digits, suffix_len)) {
-			// Match! Full b58enc only for display
+		bool matched = false;
+		if (suffix_len > 0) {
+			// FAST: modular suffix check
+			matched = check_suffix_mod(publick, suffix_digits, suffix_len);
+		} else {
+			// PREFIX: b58enc + compare first chars against prefixes[]
 			char key[256]={0};
 			size_t ks=256;
 			b58enc(key, &ks, publick, 32);
-
+			for (int p = 0; p < sizeof(prefixes)/sizeof(prefixes[0]); ++p) {
+				bool pm = true;
+				for (int j = 0; prefixes[p][j] != 0; ++j) {
+					if (prefixes[p][j] != '?' && prefixes[p][j] != key[j]) { pm = false; break; }
+				}
+				if (pm) { matched = true; break; }
+			}
+			if (matched) {
+				atomicAdd(keys_found, 1);
+				printf("MATCH %s\n[", key);
+				for(int n=0;n<32;n++) printf("%d,",(unsigned char)seed[n]);
+				for(int n=0;n<32;n++){if(n+1==32)printf("%d",publick[n]);else printf("%d,",publick[n]);}
+				printf("]\n");
+			}
+		}
+		if (matched && suffix_len > 0) {
+			char key[256]={0};
+			size_t ks=256;
+			b58enc(key, &ks, publick, 32);
 			atomicAdd(keys_found, 1);
 			printf("MATCH %s\n[", key);
 			for(int n=0;n<32;n++) printf("%d,",(unsigned char)seed[n]);
