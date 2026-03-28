@@ -27,7 +27,7 @@
 #include "../config.h"
 
 /* -- Constants ------------------------------------------------------------- */
-#define BATCH_SIZE 32  // points to accumulate before batch inversion
+#define BATCH_SIZE 256  // points to accumulate before batch inversion
 
 __device__ __constant__ char B58_ALPHABET[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 static const char H_B58[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
