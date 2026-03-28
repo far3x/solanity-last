@@ -108,6 +108,8 @@ void vanity_run(config &vanity) {
 	int keys_found_this_iteration;
 	int* dev_keys_found[100];
 
+	printf("Starting scan loop (%d iterations)...\n", MAX_ITERATIONS);
+	fflush(stdout);
 	for (int i = 0; i < MAX_ITERATIONS; ++i) {
 		auto start = std::chrono::high_resolution_clock::now();
 		executions_this_iteration = 0;
@@ -134,6 +136,12 @@ void vanity_run(config &vanity) {
 				dev_g,
 				dev_executions_this_gpu[g]
 			);
+			cudaError_t launchErr = cudaGetLastError();
+			if (launchErr != cudaSuccess) {
+				printf("LAUNCH ERROR GPU %d: %s\n", g, cudaGetErrorString(launchErr));
+				fflush(stdout);
+				exit(1);
+			}
 		}
 
 		cudaDeviceSynchronize();
